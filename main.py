@@ -44,11 +44,16 @@ import time
 import warnings
 import traceback
 import os
+import sys
+
+# Live weather module (same directory as this script)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from realtime_weather import fetch_wind_profile
 
 warnings.filterwarnings('ignore')
 
 # Output folder for plots
-PLOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'plots')
+PLOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'plots')
 os.makedirs(PLOT_DIR, exist_ok=True)
 
 SEPARATOR = "=" * 70
@@ -294,20 +299,27 @@ def topic2_root_finding():
 # TOPIC 3: INTERPOLATION TECHNIQUES
 # =============================================================================
 
-def topic3_interpolation():
+def topic3_interpolation(weather: dict):
+    """
+    Interpolation techniques applied to drone route data.
+
+    Parameters
+    ----------
+    weather : dict returned by live_weather.fetch_wind_profile()
+              Keys used: 'distances_km', 'wind_speeds', 'source', 'location'
+    """
     section_header(3, "INTERPOLATION TECHNIQUES")
 
-    # Real drone delivery scenario: altitude profile between waypoints
-    # Sparse measurements of terrain height (m) at known horizontal distances (km)
-    waypoint_dist = np.array([0, 2, 5, 8, 11, 14, 17, 20], dtype=float)  # km
-    terrain_height = np.array([150, 180, 320, 410, 290, 200, 175, 160], dtype=float)  # meters
+    # ── Terrain data (fixed waypoints from survey / map data) ─────────────
+    waypoint_dist  = np.array([0, 2, 5, 8, 11, 14, 17, 20], dtype=float)   # km
+    terrain_height = np.array([150, 180, 320, 410, 290, 200, 175, 160], dtype=float)  # m
 
     x_fine = np.linspace(0, 20, 500)
 
     print("\n[3.1] Linear Interpolation of Terrain Height Profile")
     lin_interp = interp1d(waypoint_dist, terrain_height, kind='linear')
     y_linear = lin_interp(x_fine)
-    print(f"  Data points  : {len(waypoint_dist)}")
+    print(f"  Data points             : {len(waypoint_dist)}")
     print(f"  Linear interp at x=6 km: {lin_interp(6):.2f} m")
 
     print("\n[3.2] Cubic Spline Interpolation of Terrain Height Profile")
@@ -316,29 +328,37 @@ def topic3_interpolation():
     print(f"  Cubic spline at x=6 km : {cs(6):.2f} m")
     print(f"  Max terrain height (cubic): {y_cubic.max():.2f} m")
 
-    print("\n[3.3] Wind Speed Interpolation Over Route (Noisy Sensor Data)")
-    # Simulate noisy wind speed measurements
-    np.random.seed(42)
-    dist_sensors = np.linspace(0, 20, 12)
-    wind_true = 8 + 4 * np.sin(dist_sensors * np.pi / 10)
-    wind_noisy = wind_true + np.random.normal(0, 0.5, len(dist_sensors))
-    cs_wind = CubicSpline(dist_sensors, wind_noisy)
-    x_wind_fine = np.linspace(0, 20, 500)
+    # ── Live / fallback wind data ─────────────────────────────────────────
+    print("\n[3.3] Wind Speed Interpolation Over Route")
+    data_label  = "Live Open-Meteo" if weather['source'] == 'live' else "Fallback (offline)"
+    print(f"  Data source : {data_label}  |  Location: {weather['location']}")
+
+    dist_sensors = weather['distances_km']   # shape (12,)
+    wind_vals    = weather['wind_speeds']     # shape (12,)  real m/s
+
+    cs_wind      = CubicSpline(dist_sensors, wind_vals, bc_type='not-a-knot')
+    x_wind_fine  = np.linspace(0, 20, 500)
     y_wind_spline = cs_wind(x_wind_fine)
 
-    # Error analysis: compare interpolation at known points
-    lin_wind_interp = interp1d(dist_sensors, wind_noisy, kind='linear')
+    # Also build a linear interpolant for comparison
+    lin_wind_interp = interp1d(dist_sensors, wind_vals, kind='linear',
+                               fill_value='extrapolate')
     mid_points = (dist_sensors[:-1] + dist_sensors[1:]) / 2
     linear_err = np.mean(np.abs(lin_wind_interp(mid_points) - cs_wind(mid_points)))
-    print(f"  Mean difference |linear - cubic| at midpoints: {linear_err:.4f} m/s")
+    print(f"  Wind range  : {wind_vals.min():.2f} – {wind_vals.max():.2f} m/s "
+          f"(mean {wind_vals.mean():.2f} m/s)")
+    print(f"  Mean |linear − cubic| at midpoints: {linear_err:.4f} m/s")
 
-    # Plot
+    # ── Plot ──────────────────────────────────────────────────────────────
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    fig.suptitle("Topic 3: Interpolation Techniques for Drone Route", fontsize=14, fontweight='bold')
+    src_tag = f"[{data_label}]"
+    fig.suptitle(f"Topic 3: Interpolation Techniques for Drone Route  {src_tag}",
+                 fontsize=13, fontweight='bold')
 
-    axes[0].plot(waypoint_dist, terrain_height, 'ko', markersize=8, label='Waypoints', zorder=5)
+    axes[0].plot(waypoint_dist, terrain_height, 'ko', markersize=8,
+                 label='Waypoints (survey)', zorder=5)
     axes[0].plot(x_fine, y_linear, 'r--', linewidth=1.5, label='Linear')
-    axes[0].plot(x_fine, y_cubic, 'b-', linewidth=2, label='Cubic Spline')
+    axes[0].plot(x_fine, y_cubic,  'b-',  linewidth=2,   label='Cubic Spline')
     axes[0].fill_between(x_fine, 0, y_cubic, alpha=0.1, color='blue')
     axes[0].set_xlabel("Horizontal Distance (km)")
     axes[0].set_ylabel("Terrain Height (m)")
@@ -346,14 +366,15 @@ def topic3_interpolation():
     axes[0].legend()
     axes[0].grid(True, alpha=0.4)
 
-    axes[1].plot(dist_sensors, wind_noisy, 'rs', markersize=7, label='Noisy Sensor Data', zorder=5)
-    axes[1].plot(x_wind_fine, 8 + 4 * np.sin(x_wind_fine * np.pi / 10), 'k--',
-                 linewidth=1, label='True Wind Speed', alpha=0.6)
-    axes[1].plot(x_wind_fine, y_wind_spline, 'b-', linewidth=2, label='Cubic Spline Fit')
+    axes[1].plot(dist_sensors, wind_vals, 'rs', markersize=7,
+                 label=f'{data_label} measurements', zorder=5)
+    axes[1].plot(x_wind_fine, lin_wind_interp(x_wind_fine), 'g--',
+                 linewidth=1.2, label='Linear interp', alpha=0.7)
+    axes[1].plot(x_wind_fine, y_wind_spline, 'b-', linewidth=2, label='Cubic Spline')
     axes[1].set_xlabel("Route Distance (km)")
     axes[1].set_ylabel("Wind Speed (m/s)")
-    axes[1].set_title("Wind Speed Interpolation Along Route")
-    axes[1].legend()
+    axes[1].set_title(f"Wind Speed Interpolation  ({data_label})")
+    axes[1].legend(fontsize=8)
     axes[1].grid(True, alpha=0.4)
 
     plt.tight_layout()
@@ -1249,7 +1270,14 @@ def topic10_performance_stability():
 # TOPIC 11: VISUALIZATION AND DOCUMENTATION
 # =============================================================================
 
-def topic11_visualization(sol_ode, v_opt):
+def topic11_visualization(sol_ode, v_opt, weather: dict):
+    """
+    Full system dashboard.
+
+    Parameters
+    ----------
+    weather : dict from live_weather.fetch_wind_profile()
+    """
     section_header(11, "VISUALIZATION AND DOCUMENTATION")
 
     print("\n[11.1] Full System Dashboard – Drone Delivery Summary")
@@ -1261,20 +1289,21 @@ def topic11_visualization(sol_ode, v_opt):
     h_route  = cs_t(x_route)
     slope_route = cs_t(x_route, 1)
 
-    # Wind speed
-    dist_sensors = np.linspace(0, 20, 12)
-    np.random.seed(42)
-    wind_vals = 8 + 4 * np.sin(dist_sensors * np.pi / 10) + np.random.normal(0, 0.5, 12)
-    cs_wind = CubicSpline(dist_sensors, wind_vals)
-    wind_route = cs_wind(x_route)
+    # Wind speed — live or fallback
+    data_label = "Live Open-Meteo" if weather['source'] == 'live' else "Fallback (offline)"
+    dist_sensors = weather['distances_km']
+    wind_vals    = weather['wind_speeds']
+    cs_wind      = CubicSpline(dist_sensors, wind_vals, bc_type='not-a-knot')
+    wind_route   = cs_wind(x_route)
 
     # Power consumption
     P_base = 200; k_climb = 50; k_wind = 2
     P_route = P_base + k_climb * np.maximum(slope_route, 0) + k_wind * wind_route**2
 
     fig = plt.figure(figsize=(16, 12))
-    fig.suptitle("DRONE DELIVERY ROUTE OPTIMIZATION — Full System Dashboard",
-                 fontsize=16, fontweight='bold', y=0.98)
+    src_tag = f"  [{data_label}]"
+    fig.suptitle(f"DRONE DELIVERY ROUTE OPTIMIZATION — Full System Dashboard{src_tag}",
+                 fontsize=14, fontweight='bold', y=0.98)
     gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.45, wspace=0.35)
 
     # 1. Terrain profile
@@ -1296,7 +1325,7 @@ def topic11_visualization(sol_ode, v_opt):
     ax2 = fig.add_subplot(gs[0, 2])
     ax2.plot(x_route, wind_route, 'teal', linewidth=2)
     ax2.fill_between(x_route, 0, wind_route, alpha=0.2, color='teal')
-    ax2.set_title("Wind Speed")
+    ax2.set_title(f"Wind Speed ({data_label})")
     ax2.set_xlabel("Distance (km)")
     ax2.set_ylabel("Wind (m/s)")
     ax2.grid(True, alpha=0.4)
@@ -1346,7 +1375,12 @@ def topic11_visualization(sol_ode, v_opt):
     ax6.axis('off')
     summary_text = [
         "SUMMARY STATISTICS",
-        "─" * 22,
+        "─" * 26,
+        f"Data source   : {data_label}",
+        f"Location      : {weather['location'][:24]}",
+        f"Temp / RH     : {weather['temperature_c']:.1f}°C / {weather['humidity_pct']:.0f}%",
+        f"Air density   : {weather['air_density']:.4f} kg/m³",
+        "─" * 26,
         f"Route length  : 20 km",
         f"Max terrain   : {h_route.max():.0f} m",
         f"Max slope     : {slope_route.max():.1f} m/km",
@@ -1371,19 +1405,27 @@ def topic11_visualization(sol_ode, v_opt):
 # TOPIC 12: COMPARATIVE ANALYSIS AND CASE STUDY
 # =============================================================================
 
-def topic12_comparative_analysis():
+def topic12_comparative_analysis(weather: dict):
+    """
+    Comparative analysis and case study.
+
+    Parameters
+    ----------
+    weather : dict from live_weather.fetch_wind_profile()
+    """
     section_header(12, "COMPARATIVE ANALYSIS AND CASE STUDY")
 
     print("\n[12.1] Case Study: Total Route Energy – Multiple Integration Methods")
-    # Standard test function: drone power profile over 20 km route
+    data_label = "Live Open-Meteo" if weather['source'] == 'live' else "Fallback (offline)"
+    print(f"  Wind data source: {data_label}  |  {weather['location']}")
+
     wp_dist  = np.array([0, 2, 5, 8, 11, 14, 17, 20], dtype=float)
     wp_height= np.array([150, 180, 320, 410, 290, 200, 175, 160], dtype=float)
     cs_t     = CubicSpline(wp_dist, wp_height)
 
-    dist_sensors = np.linspace(0, 20, 12)
-    np.random.seed(42)
-    wind_vals = 8 + 4 * np.sin(dist_sensors * np.pi / 10) + np.random.normal(0, 0.5, 12)
-    cs_wind  = CubicSpline(dist_sensors, wind_vals)
+    dist_sensors = weather['distances_km']
+    wind_vals    = weather['wind_speeds']
+    cs_wind      = CubicSpline(dist_sensors, wind_vals, bc_type='not-a-knot')
 
     P_base = 200; k_climb = 50; k_wind = 2; v_speed = 15.0
 
@@ -1535,13 +1577,25 @@ def main():
     print(SEPARATOR)
     print("  DRONE DELIVERY ROUTE OPTIMIZATION USING NUMERICAL METHODS")
     print("  Course: 155-4007 Numerical Methods in Engineering")
-    print("  Python Version: " + __import__('sys').version.split()[0])
+    print("  Python Version: " + sys.version.split()[0])
     print(SEPARATOR)
+
+    # ── Fetch live weather data ONCE (shared across all topics) ──────────────
+    print("\n  Fetching real-time weather data from Open-Meteo API ...")
+    print("  Route: Mersin, Turkey  (lat=36.8969, lon=34.7313, length=20 km)\n")
+    weather = fetch_wind_profile(
+        lat=36.8969, lon=34.7313,
+        n_points=12, route_length_km=20.0,
+        verbose=True
+    )
+    print(f"\n  Weather data source : {weather['source'].upper()}")
+    print(f"  {weather['description']}\n")
 
     t_start = time.perf_counter()
 
     # --- Run all 12 topics ---
     results = {}
+    results['weather'] = weather    # store for summary
 
     # Topic 1: Error Analysis
     results['t1'] = topic1_error_analysis()
@@ -1549,8 +1603,8 @@ def main():
     # Topic 2: Root Finding
     results['t2'] = topic2_root_finding()
 
-    # Topic 3: Interpolation
-    cs_terrain, cs_wind = topic3_interpolation()
+    # Topic 3: Interpolation  (uses live weather)
+    cs_terrain, cs_wind = topic3_interpolation(weather)
 
     # Topic 4: Differentiation
     results['t4_dh'], results['t4_x'] = topic4_differentiation(cs_terrain)
@@ -1573,11 +1627,11 @@ def main():
     # Topic 10: Performance & Stability
     topic10_performance_stability()
 
-    # Topic 11: Visualization Dashboard
-    topic11_visualization(results['sol_ode'], results['v_opt'])
+    # Topic 11: Visualization Dashboard  (uses live weather)
+    topic11_visualization(results['sol_ode'], results['v_opt'], weather)
 
-    # Topic 12: Comparative Analysis
-    topic12_comparative_analysis()
+    # Topic 12: Comparative Analysis  (uses live weather)
+    topic12_comparative_analysis(weather)
 
     t_total = time.perf_counter() - t_start
 
@@ -1588,7 +1642,12 @@ def main():
     print(SEPARATOR)
 
     # Final Summary
+    w = results['weather']
     print("\n  KEY RESULTS SUMMARY")
+    print(f"  Weather source           : {w['source'].upper()} ({w['location']})")
+    print(f"  Temperature / Humidity   : {w['temperature_c']:.1f} °C  /  {w['humidity_pct']:.0f} %")
+    print(f"  Air density (live)       : {w['air_density']:.4f} kg/m³")
+    print(f"  Wind (mean along route)  : {w['wind_speeds'].mean():.2f} m/s")
     print(f"  Machine epsilon          : {results['t1']['machine_eps']:.4e}")
     print(f"  Hover altitude (root)    : {results['t2']['bisection']['root']:.2f} m")
     print(f"  Total route energy       : {results['t5_E']/3600:.4f} Wh")
