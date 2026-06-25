@@ -40,20 +40,17 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import sys
 import time
 import warnings
-import traceback
 import os
-import sys
 
-# Live weather module (same directory as this script)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from realtime_weather import fetch_wind_profile
 
 warnings.filterwarnings('ignore')
 
 # Output folder for plots
-PLOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'plots')
+PLOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'plots')
 os.makedirs(PLOT_DIR, exist_ok=True)
 
 SEPARATOR = "=" * 70
